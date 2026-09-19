@@ -1,23 +1,28 @@
-// diu — the DIU OS userland SDK/CLI (ADR D-123 stage 2).
+// diu — the DIU OS userland SDK/CLI (ADR D-123 stage 2 + D-130 slice 1).
 //
-// Three verbs, mirroring the kernel syscall surface for gene authors:
+// Four verbs:
 //   diu new <module_id>          scaffold a gene package (gene.json + README)
 //   diu test [path] [--tier N]   run the kernel's Gate 1 validator LOCALLY —
 //                                the exact same code the server runs on publish
 //                                (diu_kernel::gate1), zero drift by construction
+//   diu import [path] [--tier N] candidate-import (D-130): Gate 1 + INV-039
+//                                triple. Does NOT publish, does not touch
+//                                modules, does not require DIU_TOKEN.
 //   diu publish [path] --project <uuid>
 //                                create a draft on a platform instance and
 //                                publish it (server re-runs every gate; the
 //                                server is always authoritative)
 //
 // Env for publish: DIU_API (default https://diu-os.com), DIU_TOKEN (JWT, required).
+// `diu import` reads neither.
 //
 // What the local gate CANNOT check (server-only, by design):
 //   - Q-96 retraction: the retracted_dois list lives on the instance;
 //   - Gate 2 (Quantum review), engine/last_run presence, project ownership.
-// `diu test` says so explicitly instead of pretending (K-4: no false "verified").
+// `diu test` / `diu import` say so explicitly instead of pretending (K-4).
 
-use diu_kernel::gate1::{validate_gate1, ValidateGate1Options};
+use diu_kernel::digest::canonical_digest;
+use diu_kernel::gate1::{validate_gate1, Gate1Failure, ValidateGate1Options};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -29,6 +34,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("new") => cmd_new(&args[1..]),
         Some("test") => cmd_test(&args[1..]),
+        Some("import") => cmd_import(&args[1..]),
         Some("publish") => cmd_publish(&args[1..]),
         Some("--help") | Some("-h") | None => {
             print_help();
@@ -48,14 +54,17 @@ fn print_help() {
          USAGE:\n\
          \x20 diu new <module_id>                 scaffold a gene package\n\
          \x20 diu test [gene.json] [--tier N]     run kernel Gate 1 locally (default tier 2)\n\
+         \x20 diu import [gene.json] [--tier N]   candidate-import: Gate 1 + INV-039 triple\n\
+         \x20                                     (no publish, no DIU_TOKEN, no modules write)\n\
          \x20 diu publish [gene.json] --project <uuid>\n\
          \x20                                     create draft + publish on a platform instance\n\n\
-         ENV (publish):\n\
+         ENV (publish only):\n\
          \x20 DIU_API     instance base URL (default {DEFAULT_API})\n\
          \x20 DIU_TOKEN   JWT bearer token (required)\n\n\
          The local gate is the byte-identical validator the server runs (diu-kernel).\n\
-         Server-only checks (DOI retraction Q-96, Gate 2 review, ownership) still\n\
-         apply on publish — the platform instance is always authoritative.",
+         `diu import` prints a candidate, never a published module. import_refused\n\
+         is operational, not a scientific INVALID. Server-only checks (DOI retraction\n\
+         Q-96, Gate 2 review, ownership) still apply on publish.",
         env!("CARGO_PKG_VERSION"),
     );
 }
@@ -116,7 +125,8 @@ fn cmd_new(args: &[String]) -> ExitCode {
         "# {module_id} — DIU OS gene\n\n\
          Fill `gene.json`, then:\n\n\
          ```bash\n\
-         diu test {module_id}/gene.json   # kernel Gate 1, locally\n\
+         diu test {module_id}/gene.json     # kernel Gate 1, locally\n\
+         diu import {module_id}/gene.json   # candidate (D-130); not published\n\
          DIU_TOKEN=... diu publish {module_id}/gene.json --project <uuid>\n\
          ```\n\n\
          Gate 1 requires (D-070 §2.5): module_id/semver/title; scientific_purpose ≥ 40 chars;\n\
@@ -202,6 +212,92 @@ fn cmd_test(args: &[String]) -> ExitCode {
         for f in &failures {
             eprintln!("  [{}] {}", f.block_id, f.message);
         }
+        ExitCode::FAILURE
+    }
+}
+
+// ── diu import (D-130 slice 1) ────────────────────────────────────────────────
+
+struct ImportVerdict {
+    passed: bool,
+    module_id: String,
+    version: String,
+    content_hash: Result<String, String>,
+    failures: Vec<Gate1Failure>,
+}
+
+fn identity_field(doc: &Value, key: &str) -> String {
+    doc.get("identity")
+        .and_then(|i| i.get(key))
+        .and_then(|v| v.as_str())
+        .unwrap_or("-")
+        .to_string()
+}
+
+/// Local candidate-import: same Gate 1 as `diu test`, plus INV-039 triple.
+/// Pure — no HTTP, no env, no `modules` write. Hash is JCS→SHA-256 of the
+/// parsed manifest (same algorithm as K-1, different object).
+fn evaluate_import(doc: &Value, tier: i32) -> ImportVerdict {
+    let failures = validate_gate1(
+        doc,
+        ValidateGate1Options {
+            subscription_tier: tier,
+            ..Default::default()
+        },
+    );
+    ImportVerdict {
+        passed: failures.is_empty(),
+        module_id: identity_field(doc, "module_id"),
+        version: identity_field(doc, "version"),
+        content_hash: canonical_digest(doc).map_err(|e| e.to_string()),
+        failures,
+    }
+}
+
+fn print_triple(verdict: &ImportVerdict) {
+    let hash = match &verdict.content_hash {
+        Ok(h) => h.as_str(),
+        Err(e) => e.as_str(),
+    };
+    println!("identity: {}", verdict.module_id);
+    println!("revision: {}", verdict.version);
+    println!("content_hash: {hash}");
+}
+
+fn cmd_import(args: &[String]) -> ExitCode {
+    let (path, tier) = parse_path_and_flag(args, "--tier");
+    let tier: i32 = tier.as_deref().unwrap_or("2").parse().unwrap_or(2);
+
+    let doc = match load_doc(&path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("diu import: {e}");
+            eprintln!("import_refused — operational, not a scientific INVALID");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let verdict = evaluate_import(&doc, tier);
+    print_triple(&verdict);
+
+    if verdict.passed {
+        println!("Gate 1: PASS ({}, tier {tier})", path.display());
+        println!("candidate ≠ published");
+        println!(
+            "note: Q-96 retraction, Gate 2 and ownership are server-only (D-130 slice 2).\n\
+             Local PASS is a candidate pin, not a registry row."
+        );
+        ExitCode::SUCCESS
+    } else {
+        eprintln!(
+            "import_refused ({}, tier {tier}) — {} Gate 1 issue(s):",
+            path.display(),
+            verdict.failures.len()
+        );
+        for f in &verdict.failures {
+            eprintln!("  [{}] {}", f.block_id, f.message);
+        }
+        eprintln!("import_refused is operational, not a scientific INVALID");
         ExitCode::FAILURE
     }
 }
@@ -323,5 +419,113 @@ mod tests {
         assert!(valid_module_id("my_gene_1"));
         assert!(!valid_module_id("My_gene"));
         assert!(!valid_module_id("x"));
+    }
+
+    fn valid_import_doc() -> Value {
+        json!({
+            "identity": {
+                "module_id": "test_module_x",
+                "version": "0.1.0",
+                "title": "Test module",
+                "author_orcid": "0000-0002-1825-0097"
+            },
+            "scientific_purpose": "A".repeat(40),
+            "mathematical_model": {
+                "equations": ["x = 1"],
+                "source_doi": "10.1126/science.171.3969.385"
+            },
+            "inputs": [{ "key": "r", "data_type": "scalar", "unit": "1/time" }],
+            "outputs": [{ "key": "n", "data_type": "series", "unit": "count" }],
+            "epistemic": { "default_type": "hypothesis", "max_confidence": "hypothesis" },
+            "known_limitations": "B".repeat(40),
+            "verification_test": "Check output at defaults."
+        })
+    }
+
+    // D-130 §7.1 — filled scaffold passes; hash is 64 hex, same as kernel digest.
+    #[test]
+    fn import_valid_gene_passes_with_manifest_hash() {
+        let doc = valid_import_doc();
+        let v = evaluate_import(&doc, 2);
+        assert!(v.passed, "{:?}", v.failures);
+        assert_eq!(v.module_id, "test_module_x");
+        assert_eq!(v.version, "0.1.0");
+        let hash = v.content_hash.expect("JCS digest");
+        assert_eq!(hash.len(), 64);
+        assert_eq!(hash, canonical_digest(&doc).unwrap());
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // D-130 §7.2 — missing source_doi at equations = same Q-95 class as `diu test`.
+    #[test]
+    fn import_missing_source_doi_is_q95_same_as_test() {
+        let mut doc = valid_import_doc();
+        doc["mathematical_model"]["source_doi"] = json!("");
+        let imported = evaluate_import(&doc, 2);
+        let tested = validate_gate1(
+            &doc,
+            ValidateGate1Options {
+                subscription_tier: 2,
+                ..Default::default()
+            },
+        );
+        assert!(!imported.passed);
+        assert_eq!(imported.failures.len(), tested.len());
+        assert!(imported.failures.iter().any(|f| f.message.contains("Q-95")));
+        assert_eq!(
+            imported
+                .failures
+                .iter()
+                .map(|f| &f.message)
+                .collect::<Vec<_>>(),
+            tested.iter().map(|f| &f.message).collect::<Vec<_>>()
+        );
+    }
+
+    // D-130 §7.3 — numeric port without unit = Q-97.
+    #[test]
+    fn import_numeric_port_without_unit_is_q97() {
+        let mut doc = valid_import_doc();
+        doc["outputs"] = json!([{ "key": "n", "data_type": "series" }]);
+        let v = evaluate_import(&doc, 2);
+        assert!(!v.passed);
+        assert!(v.failures.iter().any(|f| f.message.contains("Q-97")));
+    }
+
+    // D-130 §7.4 — import is file+kernel only: no token, no HTTP, no modules write.
+    #[test]
+    fn import_does_not_require_token_or_publish() {
+        let v = evaluate_import(&valid_import_doc(), 2);
+        assert!(v.passed);
+        // evaluate_import has no std::env / reqwest / SQL. DIU_TOKEN is publish-only.
+    }
+
+    // D-130 §7.5 — two evaluations of the same bytes (and key-reordered twin) share a hash.
+    #[test]
+    fn import_same_bytes_same_content_hash() {
+        let a = valid_import_doc();
+        let b = valid_import_doc();
+        let va = evaluate_import(&a, 2);
+        let vb = evaluate_import(&b, 2);
+        assert_eq!(
+            va.content_hash.as_ref().unwrap(),
+            vb.content_hash.as_ref().unwrap()
+        );
+
+        let reordered = json!({
+            "verification_test": a["verification_test"],
+            "known_limitations": a["known_limitations"],
+            "epistemic": a["epistemic"],
+            "outputs": a["outputs"],
+            "inputs": a["inputs"],
+            "mathematical_model": a["mathematical_model"],
+            "scientific_purpose": a["scientific_purpose"],
+            "identity": a["identity"]
+        });
+        let vr = evaluate_import(&reordered, 2);
+        assert_eq!(
+            va.content_hash.as_ref().unwrap(),
+            vr.content_hash.as_ref().unwrap()
+        );
     }
 }
