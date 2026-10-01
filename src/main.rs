@@ -284,8 +284,8 @@ fn cmd_import(args: &[String]) -> ExitCode {
         println!("Gate 1: PASS ({}, tier {tier})", path.display());
         println!("candidate ≠ published");
         println!(
-            "note: Q-96 retraction, Gate 2 and ownership are server-only (D-130 slice 2).\n\
-             Local PASS is a candidate pin, not a registry row."
+            "note: Q-96 retraction is POST /api/v1/federation/verify on an instance.\n\
+             Gate 2 and ownership stay on publish. Local PASS is a candidate pin, not a registry row."
         );
         ExitCode::SUCCESS
     } else {
