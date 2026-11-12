@@ -35,6 +35,8 @@ DIU_TOKEN=… diu publish my_gene/gene.json --project <uuid>   # on a DIU OS ins
 
 ## Use from an AI agent (MCP)
 
+▶ **2-minute video:** [the same check run by Claude through `diu mcp`](https://youtu.be/NskhtT3z-Bg): install, Gate 1 on a model passport, a bar declared before the fit, and why a run's PASS is not a claim's SUPPORTED.
+
 `diu mcp` is an [MCP](https://modelcontextprotocol.io) server on stdio. It is offline and
 read-only: no network, no files, no token, no publish.
 
