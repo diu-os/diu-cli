@@ -1,14 +1,22 @@
 [package]
 name = "diu-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "diu — the DIU OS userland SDK/CLI (ADR D-123 stage 2 + D-130 slice 1): scaffold a gene, run Gate 1 locally, candidate-import, publish to a platform instance."
+description = "diu — command-line SDK for DIU OS genes: scaffold a gene passport, run the kernel's Gate 1 locally, compute its content hash, and publish to a DIU OS instance."
+license = "Apache-2.0" # ADR D-124 amendment, founder decision 12 Nov 2026
+repository = "https://github.com/diu-os/diu-cli"
+homepage = "https://diu-os.dev"
+readme = "README.md"
+keywords = ["reproducibility", "verification", "science", "cli"]
+categories = ["command-line-utilities", "science"]
+exclude = [".github/"]
 
 [[bin]]
 name = "diu"
 path = "src/main.rs"
 
 [dependencies]
-diu-kernel = { path = "../../kernel" }
+# `path` for the monorepo build; `version` is what crates.io resolves.
+diu-kernel = { path = "../../kernel", version = "0.2.0" }
 serde_json = "1.0"
 reqwest = { version = "0.13", features = ["json", "blocking"] }

@@ -1,0 +1,31 @@
+# CI for the public mirror github.com/diu-os/diu-cli (D-124 amendment, 12 Nov 2026).
+# Inert inside the private monorepo: GitHub only reads .github/ at a repo root.
+# In the mirror (a subtree of tools/diu-cli/) this file sits at the root and runs.
+name: cli
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # In the monorepo the kernel is a sibling path; in this mirror it is the
+      # published crate. Drop the path so cargo resolves diu-kernel from crates.io,
+      # exactly as `cargo install diu-cli` does.
+      - run: sed -i 's#path = "../../kernel", ##' Cargo.toml
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      # The published crate must build from its own archive, as crates.io will.
+      - run: cargo package

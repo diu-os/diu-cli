@@ -36,6 +36,14 @@ fn main() -> ExitCode {
         Some("test") => cmd_test(&args[1..]),
         Some("import") => cmd_import(&args[1..]),
         Some("publish") => cmd_publish(&args[1..]),
+        Some("--version") | Some("-V") => {
+            println!(
+                "diu {} (diu-kernel {})",
+                env!("CARGO_PKG_VERSION"),
+                diu_kernel::VERSION
+            );
+            ExitCode::SUCCESS
+        }
         Some("--help") | Some("-h") | None => {
             print_help();
             ExitCode::SUCCESS
@@ -50,7 +58,7 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "diu — DIU OS gene SDK (kernel {})\n\n\
+        "diu {} — DIU OS gene SDK (diu-kernel {})\n\n\
          USAGE:\n\
          \x20 diu new <module_id>                 scaffold a gene package\n\
          \x20 diu test [gene.json] [--tier N]     run kernel Gate 1 locally (default tier 2)\n\
@@ -66,6 +74,7 @@ fn print_help() {
          is operational, not a scientific INVALID. Server-only checks (DOI retraction\n\
          Q-96, Gate 2 review, ownership) still apply on publish.",
         env!("CARGO_PKG_VERSION"),
+        diu_kernel::VERSION,
     );
 }
 
