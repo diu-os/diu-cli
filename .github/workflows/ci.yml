@@ -23,7 +23,8 @@ jobs:
       # In the monorepo the kernel is a sibling path; in this mirror it is the
       # published crate. Drop the path so cargo resolves diu-kernel from crates.io,
       # exactly as `cargo install diu-cli` does.
-      - run: sed -i 's#path = "../../kernel", ##' Cargo.toml
+      # Quoted: an unquoted " #" would start a YAML comment and cut the command.
+      - run: "sed -i 's|path = \"../../kernel\", ||' Cargo.toml"
       - run: cargo fmt -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
