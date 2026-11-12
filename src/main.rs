@@ -1,6 +1,6 @@
 // diu — the DIU OS userland SDK/CLI (ADR D-123 stage 2 + D-130 slice 1).
 //
-// Four verbs:
+// Five verbs:
 //   diu new <module_id>          scaffold a gene package (gene.json + README)
 //   diu test [path] [--tier N]   run the kernel's Gate 1 validator LOCALLY —
 //                                the exact same code the server runs on publish
@@ -12,6 +12,8 @@
 //                                create a draft on a platform instance and
 //                                publish it (server re-runs every gate; the
 //                                server is always authoritative)
+//   diu mcp                      MCP server over stdio for AI agents (D-139):
+//                                four offline, read-only kernel tools
 //
 // Env for publish: DIU_API (default https://diu-os.com), DIU_TOKEN (JWT, required).
 // `diu import` reads neither.
@@ -20,6 +22,8 @@
 //   - Q-96 retraction: the retracted_dois list lives on the instance;
 //   - Gate 2 (Quantum review), engine/last_run presence, project ownership.
 // `diu test` / `diu import` say so explicitly instead of pretending (K-4).
+
+mod mcp;
 
 use diu_kernel::digest::canonical_digest;
 use diu_kernel::gate1::{validate_gate1, Gate1Failure, ValidateGate1Options};
@@ -36,6 +40,7 @@ fn main() -> ExitCode {
         Some("test") => cmd_test(&args[1..]),
         Some("import") => cmd_import(&args[1..]),
         Some("publish") => cmd_publish(&args[1..]),
+        Some("mcp") => mcp::run(),
         Some("--version") | Some("-V") => {
             println!(
                 "diu {} (diu-kernel {})",
@@ -65,7 +70,9 @@ fn print_help() {
          \x20 diu import [gene.json] [--tier N]   candidate-import: Gate 1 + INV-039 triple\n\
          \x20                                     (no publish, no DIU_TOKEN, no modules write)\n\
          \x20 diu publish [gene.json] --project <uuid>\n\
-         \x20                                     create draft + publish on a platform instance\n\n\
+         \x20                                     create draft + publish on a platform instance\n\
+         \x20 diu mcp                             MCP server on stdio for AI agents (offline,\n\
+         \x20                                     read-only): claude mcp add diu -- diu mcp\n\n\
          ENV (publish only):\n\
          \x20 DIU_API     instance base URL (default {DEFAULT_API})\n\
          \x20 DIU_TOKEN   JWT bearer token (required)\n\n\
@@ -430,7 +437,7 @@ mod tests {
         assert!(!valid_module_id("x"));
     }
 
-    fn valid_import_doc() -> Value {
+    pub(crate) fn valid_import_doc() -> Value {
         json!({
             "identity": {
                 "module_id": "test_module_x",

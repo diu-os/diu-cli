@@ -1,6 +1,6 @@
 [package]
 name = "diu-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "diu — command-line SDK for DIU OS genes: scaffold a gene passport, run the kernel's Gate 1 locally, compute its content hash, and publish to a DIU OS instance."
 license = "Apache-2.0" # ADR D-124 amendment, founder decision 12 Nov 2026
