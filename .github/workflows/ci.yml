@@ -29,4 +29,5 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       # The published crate must build from its own archive, as crates.io will.
-      - run: cargo package
+      # --allow-dirty: the only uncommitted change is the sed above, made by CI itself.
+      - run: cargo package --allow-dirty
