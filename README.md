@@ -56,7 +56,7 @@ Claude Desktop, `claude_desktop_config.json`:
 |---|---|
 | `validate_gene` | Gate 1 PASS/FAIL with each issue, and identity / revision / content_hash. Same result as `diu import` |
 | `digest` | RFC 8785 (JCS) → SHA-256 of any JSON |
-| `evaluate_criterion` | One SVVRE outcome (`PASS` `PARTIAL` `FAIL` `INCONCLUSIVE` `NOT_APPLICABLE`) for a bar against a run's measurements, plus the bar's digest. Declare the bar before the run |
+| `evaluate_criterion` | One SVVRE outcome (`PASS` `PARTIAL` `FAIL` `INCONCLUSIVE` `NOT_APPLICABLE`) for a bar against a run's measurements, plus the bar's digest. Declare the bar before the run. For a fit's diagnostics pass `fit: true` (0.4.0): a fit without a measurement is `INCONCLUSIVE` before the bar is read — kernel `evaluate_fit`, the rule a DIU OS export's R1 uses |
 | `status_axis` | Which status vocabulary a word belongs to: declared ceiling, execution outcome or claim state. No conversion between them |
 
 Every answer carries the K-4 line below.

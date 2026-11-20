@@ -12,7 +12,9 @@
 // passport or a result, never the adequacy of a model to the world.
 
 use crate::evaluate_import;
-use diu_kernel::criterion::{evaluate, CriterionSet};
+use diu_kernel::criterion::{
+    evaluate, evaluate_fit, fit_no_measurement, CriterionSet, NoMeasurement,
+};
 use diu_kernel::digest::canonical_digest;
 use diu_kernel::vocabulary::{axis_of, Axis};
 use serde_json::{json, Map, Value};
@@ -34,7 +36,7 @@ A PASS is not a statement that the model is right about the world.";
 const INSTRUCTIONS: &str = "DIU OS kernel tools, offline and read-only. \
 validate_gene runs Gate 1 on a gene passport (gene.json) and returns its identity/revision/content_hash; \
 digest computes the RFC 8785 JCS → SHA-256 hash of any JSON; \
-evaluate_criterion turns a bar declared before a run plus the run's measurements into one SVVRE outcome; \
+evaluate_criterion turns a bar declared before a run plus the run's measurements into one SVVRE outcome (fit=true for a fit's diagnostics); \
 status_axis says which status vocabulary a word belongs to. \
 Nothing here publishes, contacts a server, or reads files. ";
 
@@ -239,7 +241,7 @@ fn tool_definitions() -> Value {
         {
             "name": "evaluate_criterion",
             "title": "Evaluate a declared bar (SVVRE)",
-            "description": "Evaluate an acceptance criterion against a run's measurements and return one SVVRE outcome: PASS, PARTIAL, FAIL, INCONCLUSIVE or NOT_APPLICABLE, plus the criterion's digest. Declare the criterion BEFORE the run and keep its digest: a bar chosen after seeing the result is not a test (Р-3, K-6/K-7). A missing metric is NOT_APPLICABLE, not FAIL; a non-numeric one is INCONCLUSIVE.",
+            "description": "Evaluate an acceptance criterion against a run's measurements and return one SVVRE outcome: PASS, PARTIAL, FAIL, INCONCLUSIVE or NOT_APPLICABLE, plus the criterion's digest. Declare the criterion BEFORE the run and keep its digest: a bar chosen after seeing the result is not a test (Р-3, K-6/K-7). A missing metric is NOT_APPLICABLE, not FAIL; a non-numeric one is INCONCLUSIVE. For a fit's diagnostics pass fit=true: a fit without a measurement is INCONCLUSIVE before the bar is read (kernel criterion::evaluate_fit, the same rule a DIU OS export's R1 uses).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -262,7 +264,8 @@ fn tool_definitions() -> Value {
                             }
                         }
                     },
-                    "measurements": { "type": "object", "description": "The run's canonical result as a JSON object." }
+                    "measurements": { "type": "object", "description": "The run's canonical result as a JSON object." },
+                    "fit": { "type": "boolean", "description": "true when the measurements are a fit's diagnostics ({\"fit\": {\"r_squared\", \"converged\", \"within_bounds\"}}), as in a DIU OS export attempt whose evidence.fit is not null. Then the D-108 A3 rule applies first: no measurement (not converged, non-finite R², out of domain) → INCONCLUSIVE, exactly as the server's R1. Default false." }
                 },
                 "required": ["criterion", "measurements"],
                 "additionalProperties": false
@@ -390,7 +393,12 @@ fn tool_digest(args: &Map<String, Value>) -> Result<Value, String> {
 }
 
 fn tool_evaluate_criterion(args: &Map<String, Value>) -> Result<Value, String> {
-    reject_unknown(args, &["criterion", "measurements"])?;
+    reject_unknown(args, &["criterion", "measurements", "fit"])?;
+    let is_fit = match args.get("fit") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("`fit` must be a boolean".into()),
+    };
     let criterion = args
         .get("criterion")
         .ok_or("missing required argument `criterion`")?;
@@ -404,9 +412,22 @@ fn tool_evaluate_criterion(args: &Map<String, Value>) -> Result<Value, String> {
     set.validate()
         .map_err(|e| format!("criterion refused at declaration: {e}"))?;
     let digest = set.digest().map_err(|e| format!("digest: {e}"))?;
-    let outcome = evaluate(&set, measurements);
+    // C1: a fit is judged by the kernel's evaluate_fit — the same function the
+    // server's R1 calls for an attempt whose evidence.fit is not null.
+    let (outcome, rule, no_measurement) = if is_fit {
+        let why = fit_no_measurement(measurements).map(|w| match w {
+            NoMeasurement::NotConverged => "not_converged",
+            NoMeasurement::RSquaredNotFinite => "r_squared_not_finite",
+            NoMeasurement::OutOfDomain => "out_of_domain",
+        });
+        (evaluate_fit(&set, measurements), "evaluate_fit", why)
+    } else {
+        (evaluate(&set, measurements), "evaluate", None)
+    };
     Ok(json!({
         "outcome": outcome.as_str(),
+        "rule": rule,
+        "no_measurement": no_measurement,
         "criterion_digest": digest,
         "predicates": set.all.len(),
         "declare_first": "The bar counts only if it was declared before the run. Record criterion_digest before running; this tool cannot see when you chose it (Р-3, K-6/K-7)."
@@ -695,5 +716,65 @@ mod tests {
         let s = call("status_axis", json!({ "literal": "VERIFIED" }))["structuredContent"].clone();
         assert_eq!(s["canonical"], false);
         assert_eq!(s["did_you_mean"], Value::Null);
+    }
+
+    // C1 (Q-667): with fit=true the tool answers what a DIU OS export's R1
+    // answers — kernel evaluate_fit — on every shape of fit diagnostics; with
+    // fit absent it is plain evaluate, as before.
+    #[test]
+    fn evaluate_criterion_fit_matches_r1() {
+        let criterion =
+            json!({ "all": [ { "metric": "fit.r_squared", "op": "gt", "threshold": 0.0 } ] });
+        let set: CriterionSet = serde_json::from_value(criterion.clone()).unwrap();
+        let diag = |r2: Value, conv: f64, inb: f64| json!({ "fit": { "r_squared": r2, "iterations": 5.0, "converged": conv, "within_bounds": inb } });
+        let cases = [
+            (diag(json!(0.9), 1.0, 1.0), "PASS", None),
+            (diag(json!(-3.0), 1.0, 1.0), "FAIL", None),
+            (
+                diag(json!(0.9), 0.0, 1.0),
+                "INCONCLUSIVE",
+                Some("not_converged"),
+            ),
+            (
+                diag(Value::Null, 1.0, 1.0),
+                "INCONCLUSIVE",
+                Some("r_squared_not_finite"),
+            ),
+            (
+                diag(json!(0.9), 1.0, 0.0),
+                "INCONCLUSIVE",
+                Some("out_of_domain"),
+            ),
+        ];
+        for (m, want, why) in cases {
+            let r = call(
+                "evaluate_criterion",
+                json!({ "criterion": criterion, "measurements": m, "fit": true }),
+            );
+            let sc = &r["structuredContent"];
+            assert_eq!(sc["outcome"], want, "{m}");
+            assert_eq!(
+                sc["outcome"],
+                evaluate_fit(&set, &m).as_str(),
+                "R1 parity: {m}"
+            );
+            assert_eq!(sc["rule"], "evaluate_fit");
+            assert_eq!(sc["no_measurement"], json!(why));
+        }
+        // Without fit=true: unchanged plain evaluate (a non-converged fit with a
+        // good R² reads PASS here, which is why fit=true exists).
+        let m = diag(json!(0.9), 0.0, 1.0);
+        let r = call(
+            "evaluate_criterion",
+            json!({ "criterion": criterion, "measurements": m }),
+        );
+        assert_eq!(r["structuredContent"]["outcome"], "PASS");
+        assert_eq!(r["structuredContent"]["rule"], "evaluate");
+        // A non-boolean fit is refused as an argument error.
+        let r = call(
+            "evaluate_criterion",
+            json!({ "criterion": criterion, "measurements": m, "fit": "yes" }),
+        );
+        assert_eq!(r["isError"], true);
     }
 }
