@@ -23,15 +23,17 @@ diu new my_gene                 # scaffold my_gene/gene.json + README.md
 diu test my_gene/gene.json      # kernel Gate 1, locally; exit code 0 = pass
 diu import my_gene/gene.json    # candidate: Gate 1 + identity / revision / content_hash
 diu mcp                         # MCP server on stdio for AI agents (see below)
-DIU_TOKEN=… diu publish my_gene/gene.json --project <uuid>   # on a DIU OS instance
 ```
 
 - `diu test` and `diu import` run offline. No token, no network.
 - `content_hash` is RFC 8785 (JCS) → SHA-256 of the passport: key order does not matter.
-- `diu publish` talks to `DIU_API` (default `https://diu-os.com`) and needs `DIU_TOKEN`.
-  The server re-runs every gate and adds what a local tool cannot know: the DOI
-  retraction list, the Gate 2 review and project ownership. A local pass is necessary,
-  not sufficient.
+- A local pass is necessary, not sufficient. On publish the DIU OS server re-runs every
+  gate and adds what a local tool cannot know: the DOI retraction list, the Gate 2 review
+  and project ownership.
+- **Publishing from the CLI does not work yet.** The server rejects every `diu publish`
+  request (400): the CLI sends a draft phase the server does not accept, and it cannot
+  supply the engine code and the passing test run that publish requires. Until this is
+  fixed, publish a gene through Module Builder on the site.
 
 ## Use from an AI agent (MCP)
 
